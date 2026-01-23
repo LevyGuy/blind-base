@@ -1,11 +1,21 @@
-## Product Requirements Document (PRD): "Zero-Vault" Encryption Framework
+## Product Requirements Document (PRD): "BlindBase" Encryption Framework
 
 ### 1. Executive Summary
 
-**Project Name:** Zero-Vault Framework
+**Project Name:** BlindBase Framework (formerly Zero-Vault)
 **Goal:** To provide a lightweight, data-agnostic, zero-knowledge encryption framework for personal applications.
 **Core Philosophy:** The server is untrusted. The user's password is the only key.
 **Target Stack:** Client-Side (Vanilla JS/Web Crypto API) + Server-Side (PHP 8.2+).
+
+### 1.1 Key Trade-offs & Limitations (By Design)
+
+| Limitation | Reason | Mitigation |
+|------------|--------|------------|
+| **No Password Recovery** | Server cannot decrypt data; lost password = lost data | User education, strong password guidance |
+| **No Multi-Device Sync** | Each device derives key independently | User must enter password on each device |
+| **No Server-Side Search** | Data is encrypted; cannot query contents | Client-side filtering after decryption |
+| **XSS Vulnerability** | Key lives in JS memory | Strict CSP, no third-party scripts |
+| **Single User Only** | No key exchange mechanism | Future: add shared vault feature |
 
 ---
 
@@ -194,15 +204,120 @@ class ServerVault {
 
 ---
 
-### 6. Security Considerations (The XSS Defense)
+### 6. Security Considerations
+
+#### 6.1 XSS Defense (Primary Threat)
 
 Since XSS is the primary threat to this architecture (an attacker injecting JS to read `this.key` from memory or hook the `save()` function), the framework enforces strict implementation rules:
 
 1. **Content Security Policy (CSP):** The implementing app **MUST** serve a strict CSP header.
-* `Content-Security-Policy: default-src 'self'; script-src 'self';`
-* This prevents loading external scripts (CDNs, Analytics) which are common vectors for XSS.
-
+   * `Content-Security-Policy: default-src 'self'; script-src 'self';`
+   * This prevents loading external scripts (CDNs, Analytics) which are common vectors for XSS.
 
 2. **HttpOnly Cookies:** If using cookies for session auth (not encryption), they must be `HttpOnly` and `Secure`.
+
 3. **Sanitization:** All inputs reflected in the UI must be sanitized, even if they came from the encrypted vault. (Decrypted data could theoretically contain malicious scripts if the user saved them there).
+
 4. **No Third-Party Dependencies:** The Client SDK should have **zero** dependencies (no NPM bloat) to minimize the supply chain attack surface. It should rely purely on browser native APIs.
+
+#### 6.2 Server Security
+
+1. **Secret Key Management:**
+   * Server secret key **MUST** be stored in environment variable, **NEVER** in source code
+   * Key rotation strategy: Generate new key, re-encrypt all blobs, deprecate old key
+
+2. **Rate Limiting:** API endpoints should implement rate limiting:
+   * `get_salt`: 10 requests/minute per IP (prevents user enumeration)
+   * `save`: 30 requests/minute per user
+   * `load`: 60 requests/minute per user
+
+3. **Input Validation:**
+   * Username: alphanumeric + underscore only, 3-32 characters
+   * Payload size: Maximum 10MB per blob
+
+4. **CORS Configuration:** Only allow requests from trusted origins.
+
+#### 6.3 Error Handling
+
+The API must return consistent error responses:
+
+```json
+{
+  "error": {
+    "code": "INVALID_USER",
+    "message": "Username contains invalid characters"
+  }
+}
+```
+
+| Error Code | HTTP Status | Description |
+|------------|-------------|-------------|
+| `INVALID_USER` | 400 | Username validation failed |
+| `USER_NOT_FOUND` | 404 | User does not exist (on load) |
+| `PAYLOAD_TOO_LARGE` | 413 | Encrypted blob exceeds size limit |
+| `DECRYPT_FAILED` | 500 | Server-side decryption failed (key mismatch) |
+| `RATE_LIMITED` | 429 | Too many requests |
+
+---
+
+### 7. Deployment & Configuration
+
+#### 7.1 Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `BLINDBASE_SECRET` | Yes | 32-byte hex-encoded server encryption key |
+| `BLINDBASE_STORAGE_PATH` | No | Path to storage directory (default: `./storage/`) |
+| `BLINDBASE_MAX_PAYLOAD_MB` | No | Maximum payload size in MB (default: 10) |
+| `BLINDBASE_ALLOWED_ORIGINS` | No | Comma-separated list of allowed CORS origins |
+
+#### 7.2 Server Setup
+
+```bash
+# 1. Generate server secret key
+php -r "echo bin2hex(sodium_crypto_secretbox_keygen());"
+
+# 2. Set environment variable (add to .env or server config)
+export BLINDBASE_SECRET="your_64_char_hex_key_here"
+
+# 3. Create storage directory with proper permissions
+mkdir -p storage
+chmod 700 storage
+
+# 4. Configure web server to deny direct access to storage/
+# Apache: storage/.htaccess with "Deny from all"
+# Nginx: location /storage/ { deny all; }
+```
+
+#### 7.3 Client Integration
+
+```javascript
+// Import the BlindBase client class
+class BlindBase {
+    constructor(apiUrl) {
+        this.apiUrl = apiUrl;
+        this.key = null;
+        this.username = null;
+    }
+
+    // See Section 5.1 for full implementation
+}
+
+// Usage
+const vault = new BlindBase('/api.php');
+await vault.login('username', 'password');
+const data = await vault.load();
+await vault.save({ myData: 'encrypted' });
+vault.logout();
+```
+
+---
+
+### 8. Future Enhancements (Out of Scope for v1)
+
+1. **Argon2id Support:** Add WebAssembly Argon2id as preferred KDF with PBKDF2 fallback
+2. **Blob Versioning:** Store multiple versions with timestamps for undo/history
+3. **Shared Vaults:** Key exchange mechanism for multi-user access
+4. **Offline Support:** Service worker for offline encryption/decryption with sync queue
+5. **Audit Logging:** Track access patterns (without revealing content)
+6. **Key Export/Import:** Secure backup of derived keys for recovery scenarios
