@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zero-Vault POC</title>
+    <style>
+        body { font-family: sans-serif; max-width: 600px; margin: 2rem auto; padding: 0 1rem; }
+        .hidden { display: none; }
+        textarea { width: 100%; height: 150px; margin-top: 10px; }
+        button { padding: 10px 20px; cursor: pointer; margin-top: 10px; }
+        .status { margin-top: 10px; font-weight: bold; color: #555; }
+        input { padding: 8px; width: 100%; box-sizing: border-box; margin-top: 5px;}
+    </style>
+</head>
+<body>
+
+    <h2>Zero-Vault POC</h2>
+
+    <div id="login-screen">
+        <p>Enter a username (to identify the record) and password (to derive the key).</p>
+        <label>Username:</label>
+        <input type="text" id="username" value="demo_user">
+        <br><br>
+        <label>Password:</label>
+        <input type="password" id="password" placeholder="Enter your secret password">
+        <button onclick="app.login()">Unlock Vault</button>
+    </div>
+
+    <div id="vault-screen" class="hidden">
+        <p>Your Data (Decrypted locally in RAM)</p>
+        <textarea id="secret-data" placeholder="Type your secret here..."></textarea>
+        <br>
+        <button onclick="app.saveData()">Save (Encrypt & Send)</button>
+        <button onclick="app.logout()">Logout (Clear RAM)</button>
+    </div>
+
+    <div class="status" id="status"></div>
+
+    <script>
+        const API_URL = 'api.php';
+
+        class ZeroVault {
+            constructor() {
+                this.key = null; // Key lives ONLY in RAM
+                this.username = null;
+            }
+
+            log(msg) { document.getElementById('status').innerText = msg; }
+
+            // ---------------------------------------------------------
+            // 1. CRYPTO PRIMITIVES (Client Side)
+            // ---------------------------------------------------------
+            
+            async deriveKeyFromPassword(password, saltHex) {
+                const enc = new TextEncoder();
+                
+                // 1. Import the password as key material
+                const keyMaterial = await window.crypto.subtle.importKey(
+                    "raw", enc.encode(password), "PBKDF2", false, ["deriveKey"]
+                );
+
+                // 2. Convert Hex Salt to Uint8Array
+                const saltMatch = saltHex.match(/.{1,2}/g);
+                const salt = new Uint8Array(saltMatch.map(byte => parseInt(byte, 16)));
+
+                // 3. Derive the actual AES-GCM Key
+                return await window.crypto.subtle.deriveKey(
+                    {
+                        name: "PBKDF2",
+                        salt: salt,
+                        iterations: 100000,
+                        hash: "SHA-256"
+                    },
+                    keyMaterial,
+                    { name: "AES-GCM", length: 256 },
+                    false, // Key cannot be extracted
+                    ["encrypt", "decrypt"]
+                );
+            }
+
+            async encryptLayer1(text) {
+                const iv = window.crypto.getRandomValues(new Uint8Array(12));
+                const encoded = new TextEncoder().encode(text);
+
+                const ciphertext = await window.crypto.subtle.encrypt(
+                    { name: "AES-GCM", iv: iv },
+                    this.key,
+                    encoded
+                );
+
+                // Pack IV + Ciphertext into JSON
+                return JSON.stringify({
+                    iv: Array.from(iv),
+                    data: Array.from(new Uint8Array(ciphertext))
+                });
+            }
+
+            async decryptLayer1(jsonString) {
+                const payload = JSON.parse(jsonString);
+                const iv = new Uint8Array(payload.iv);
+                const data = new Uint8Array(payload.data);
+
+                try {
+                    const decrypted = await window.crypto.subtle.decrypt(
+                        { name: "AES-GCM", iv: iv },
+                        this.key,
+                        data
+                    );
+                    return new TextDecoder().decode(decrypted);
+                } catch (e) {
+                    throw new Error("Decryption failed. Wrong password?");
+                }
+            }
+
+            // ---------------------------------------------------------
+            // 2. APP FLOW
+            // ---------------------------------------------------------
+
+            async login() {
+                const user = document.getElementById('username').value;
+                const pass = document.getElementById('password').value;
+                if(!user || !pass) return alert("Please fill both fields");
+
+                this.log("Fetching salt from server...");
+                
+                // 1. Get Salt (Simulating Account Lookup)
+                const response = await fetch(`${API_URL}?action=get_salt&user=${user}`);
+                const result = await response.json();
+                
+                if(!result.salt) return alert("Server error: " + result.error);
+
+                this.log("Deriving key (PBKDF2)...");
+                this.username = user;
+                
+                // 2. Derive Key
+                this.key = await this.deriveKeyFromPassword(pass, result.salt);
+
+                // 3. Try to load existing data
+                await this.loadData();
+
+                // 4. UI Switch
+                document.getElementById('login-screen').classList.add('hidden');
+                document.getElementById('vault-screen').classList.remove('hidden');
+                this.log("Vault Unlocked.");
+            }
+
+            async loadData() {
+                this.log("Downloading encrypted blob...");
+                const response = await fetch(`${API_URL}?action=load&user=${this.username}`);
+                const result = await response.json();
+
+                if (result.data) {
+                    // Decrypt the blob from the server
+                    const clearText = await this.decryptLayer1(result.data);
+                    document.getElementById('secret-data').value = clearText;
+                } else {
+                    document.getElementById('secret-data').placeholder = "No data found. Type something to save.";
+                }
+            }
+
+            async saveData() {
+                const text = document.getElementById('secret-data').value;
+                this.log("Encrypting (Layer 1)...");
+                
+                // 1. Client Encrypt
+                const encryptedJson = await this.encryptLayer1(text);
+
+                // 2. Send to Server (Server will do Layer 2)
+                this.log("Sending to server...");
+                const formData = new FormData();
+                formData.append('user', this.username);
+                formData.append('payload', encryptedJson);
+
+                await fetch(`${API_URL}?action=save`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                this.log("Saved securely.");
+            }
+
+            logout() {
+                location.reload(); // Hard refresh clears memory
+            }
+        }
+
+        const app = new ZeroVault();
+    </script>
+</body>
+</html>
+
