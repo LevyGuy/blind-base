@@ -3,190 +3,385 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Zero-Vault POC</title>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'">
+    <title>BlindBase POC</title>
     <style>
-        body { font-family: sans-serif; max-width: 600px; margin: 2rem auto; padding: 0 1rem; }
-        .hidden { display: none; }
-        textarea { width: 100%; height: 150px; margin-top: 10px; }
-        button { padding: 10px 20px; cursor: pointer; margin-top: 10px; }
-        .status { margin-top: 10px; font-weight: bold; color: #555; }
-        input { padding: 8px; width: 100%; box-sizing: border-box; margin-top: 5px;}
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 600px;
+            margin: 2rem auto;
+            padding: 0 1rem;
+            background: #f5f5f5;
+            color: #333;
+        }
+
+        h2 {
+            color: #1a1a2e;
+            margin-bottom: 0.5rem;
+        }
+
+        .subtitle {
+            color: #666;
+            margin-bottom: 2rem;
+        }
+
+        .card {
+            background: white;
+            border-radius: 8px;
+            padding: 1.5rem;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            margin-bottom: 1rem;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        label {
+            display: block;
+            font-weight: 500;
+            margin-bottom: 0.25rem;
+            color: #444;
+        }
+
+        input[type="text"],
+        input[type="password"] {
+            width: 100%;
+            padding: 0.75rem;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 1rem;
+            margin-bottom: 1rem;
+            transition: border-color 0.2s;
+        }
+
+        input:focus {
+            outline: none;
+            border-color: #4a90d9;
+        }
+
+        textarea {
+            width: 100%;
+            height: 200px;
+            padding: 0.75rem;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 1rem;
+            font-family: 'Monaco', 'Menlo', monospace;
+            resize: vertical;
+        }
+
+        textarea:focus {
+            outline: none;
+            border-color: #4a90d9;
+        }
+
+        button {
+            padding: 0.75rem 1.5rem;
+            font-size: 1rem;
+            cursor: pointer;
+            border: none;
+            border-radius: 4px;
+            transition: background-color 0.2s, transform 0.1s;
+        }
+
+        button:active {
+            transform: scale(0.98);
+        }
+
+        .btn-primary {
+            background: #4a90d9;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #3a7bc8;
+        }
+
+        .btn-primary:disabled {
+            background: #a0c4e8;
+            cursor: not-allowed;
+        }
+
+        .btn-secondary {
+            background: #e0e0e0;
+            color: #333;
+            margin-left: 0.5rem;
+        }
+
+        .btn-secondary:hover {
+            background: #d0d0d0;
+        }
+
+        .btn-danger {
+            background: #e74c3c;
+            color: white;
+            margin-left: 0.5rem;
+        }
+
+        .btn-danger:hover {
+            background: #c0392b;
+        }
+
+        .status {
+            margin-top: 1rem;
+            padding: 0.75rem;
+            border-radius: 4px;
+            font-size: 0.9rem;
+        }
+
+        .status--info {
+            background: #e3f2fd;
+            color: #1565c0;
+        }
+
+        .status--success {
+            background: #e8f5e9;
+            color: #2e7d32;
+        }
+
+        .status--error {
+            background: #ffebee;
+            color: #c62828;
+        }
+
+        .status--warning {
+            background: #fff3e0;
+            color: #e65100;
+        }
+
+        .info-box {
+            background: #f8f9fa;
+            border-left: 3px solid #4a90d9;
+            padding: 0.75rem;
+            margin-top: 1rem;
+            font-size: 0.85rem;
+            color: #666;
+        }
+
+        .user-badge {
+            display: inline-block;
+            background: #e3f2fd;
+            color: #1565c0;
+            padding: 0.25rem 0.75rem;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            margin-bottom: 1rem;
+        }
+
+        .actions {
+            margin-top: 1rem;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid #fff;
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-right: 0.5rem;
+            vertical-align: middle;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
     </style>
 </head>
 <body>
 
-    <h2>Zero-Vault POC</h2>
+    <h2>BlindBase POC</h2>
+    <p class="subtitle">Zero-knowledge encrypted storage</p>
 
-    <div id="login-screen">
-        <p>Enter a username (to identify the record) and password (to derive the key).</p>
-        <label>Username:</label>
-        <input type="text" id="username" value="demo_user">
-        <br><br>
-        <label>Password:</label>
-        <input type="password" id="password" placeholder="Enter your secret password">
-        <button onclick="app.login()">Unlock Vault</button>
+    <!-- Login Screen -->
+    <div id="login-screen" class="card">
+        <p>Enter your credentials to unlock your encrypted vault.</p>
+
+        <label for="username">Username</label>
+        <input type="text" id="username" placeholder="Enter username (lowercase, 3-32 chars)" autocomplete="username">
+
+        <label for="password">Password</label>
+        <input type="password" id="password" placeholder="Enter your secret password" autocomplete="current-password">
+
+        <button id="login-btn" class="btn-primary" onclick="handleLogin()">
+            <span id="login-text">Unlock Vault</span>
+            <span id="login-loading" class="hidden"><span class="spinner"></span>Unlocking...</span>
+        </button>
+
+        <div class="info-box">
+            <strong>Privacy Notice:</strong> Your password never leaves your device.
+            It is used to derive an encryption key locally. If you forget your password,
+            your data cannot be recovered.
+        </div>
     </div>
 
-    <div id="vault-screen" class="hidden">
-        <p>Your Data (Decrypted locally in RAM)</p>
-        <textarea id="secret-data" placeholder="Type your secret here..."></textarea>
-        <br>
-        <button onclick="app.saveData()">Save (Encrypt & Send)</button>
-        <button onclick="app.logout()">Logout (Clear RAM)</button>
+    <!-- Vault Screen -->
+    <div id="vault-screen" class="card hidden">
+        <div class="user-badge" id="user-badge">Logged in as: -</div>
+
+        <label for="secret-data">Your Encrypted Data</label>
+        <textarea id="secret-data" placeholder="Type your secret data here..."></textarea>
+
+        <div class="actions">
+            <button class="btn-primary" onclick="handleSave()">
+                <span id="save-text">Save</span>
+                <span id="save-loading" class="hidden"><span class="spinner"></span>Saving...</span>
+            </button>
+            <button class="btn-secondary" onclick="handleReload()">Reload</button>
+            <button class="btn-danger" onclick="handleLogout()">Logout</button>
+        </div>
     </div>
 
-    <div class="status" id="status"></div>
+    <!-- Status Display -->
+    <div id="status" class="hidden"></div>
+
+    <!-- Load BlindBase SDK -->
+    <script src="js/blindbase-client.js"></script>
 
     <script>
-        const API_URL = 'api.php';
+        // Initialize BlindBase client
+        const vault = new BlindBase('api.php');
 
-        class ZeroVault {
-            constructor() {
-                this.key = null; // Key lives ONLY in RAM
-                this.username = null;
-            }
+        // Status display helper
+        function showStatus(message, type = 'info') {
+            const el = document.getElementById('status');
+            el.textContent = message;
+            el.className = `status status--${type}`;
+            el.classList.remove('hidden');
 
-            log(msg) { document.getElementById('status').innerText = msg; }
-
-            // ---------------------------------------------------------
-            // 1. CRYPTO PRIMITIVES (Client Side)
-            // ---------------------------------------------------------
-            
-            async deriveKeyFromPassword(password, saltHex) {
-                const enc = new TextEncoder();
-                
-                // 1. Import the password as key material
-                const keyMaterial = await window.crypto.subtle.importKey(
-                    "raw", enc.encode(password), "PBKDF2", false, ["deriveKey"]
-                );
-
-                // 2. Convert Hex Salt to Uint8Array
-                const saltMatch = saltHex.match(/.{1,2}/g);
-                const salt = new Uint8Array(saltMatch.map(byte => parseInt(byte, 16)));
-
-                // 3. Derive the actual AES-GCM Key
-                return await window.crypto.subtle.deriveKey(
-                    {
-                        name: "PBKDF2",
-                        salt: salt,
-                        iterations: 100000,
-                        hash: "SHA-256"
-                    },
-                    keyMaterial,
-                    { name: "AES-GCM", length: 256 },
-                    false, // Key cannot be extracted
-                    ["encrypt", "decrypt"]
-                );
-            }
-
-            async encryptLayer1(text) {
-                const iv = window.crypto.getRandomValues(new Uint8Array(12));
-                const encoded = new TextEncoder().encode(text);
-
-                const ciphertext = await window.crypto.subtle.encrypt(
-                    { name: "AES-GCM", iv: iv },
-                    this.key,
-                    encoded
-                );
-
-                // Pack IV + Ciphertext into JSON
-                return JSON.stringify({
-                    iv: Array.from(iv),
-                    data: Array.from(new Uint8Array(ciphertext))
-                });
-            }
-
-            async decryptLayer1(jsonString) {
-                const payload = JSON.parse(jsonString);
-                const iv = new Uint8Array(payload.iv);
-                const data = new Uint8Array(payload.data);
-
-                try {
-                    const decrypted = await window.crypto.subtle.decrypt(
-                        { name: "AES-GCM", iv: iv },
-                        this.key,
-                        data
-                    );
-                    return new TextDecoder().decode(decrypted);
-                } catch (e) {
-                    throw new Error("Decryption failed. Wrong password?");
-                }
-            }
-
-            // ---------------------------------------------------------
-            // 2. APP FLOW
-            // ---------------------------------------------------------
-
-            async login() {
-                const user = document.getElementById('username').value;
-                const pass = document.getElementById('password').value;
-                if(!user || !pass) return alert("Please fill both fields");
-
-                this.log("Fetching salt from server...");
-                
-                // 1. Get Salt (Simulating Account Lookup)
-                const response = await fetch(`${API_URL}?action=get_salt&user=${user}`);
-                const result = await response.json();
-                
-                if(!result.salt) return alert("Server error: " + result.error);
-
-                this.log("Deriving key (PBKDF2)...");
-                this.username = user;
-                
-                // 2. Derive Key
-                this.key = await this.deriveKeyFromPassword(pass, result.salt);
-
-                // 3. Try to load existing data
-                await this.loadData();
-
-                // 4. UI Switch
-                document.getElementById('login-screen').classList.add('hidden');
-                document.getElementById('vault-screen').classList.remove('hidden');
-                this.log("Vault Unlocked.");
-            }
-
-            async loadData() {
-                this.log("Downloading encrypted blob...");
-                const response = await fetch(`${API_URL}?action=load&user=${this.username}`);
-                const result = await response.json();
-
-                if (result.data) {
-                    // Decrypt the blob from the server
-                    const clearText = await this.decryptLayer1(result.data);
-                    document.getElementById('secret-data').value = clearText;
-                } else {
-                    document.getElementById('secret-data').placeholder = "No data found. Type something to save.";
-                }
-            }
-
-            async saveData() {
-                const text = document.getElementById('secret-data').value;
-                this.log("Encrypting (Layer 1)...");
-                
-                // 1. Client Encrypt
-                const encryptedJson = await this.encryptLayer1(text);
-
-                // 2. Send to Server (Server will do Layer 2)
-                this.log("Sending to server...");
-                const formData = new FormData();
-                formData.append('user', this.username);
-                formData.append('payload', encryptedJson);
-
-                await fetch(`${API_URL}?action=save`, {
-                    method: 'POST',
-                    body: formData
-                });
-
-                this.log("Saved securely.");
-            }
-
-            logout() {
-                location.reload(); // Hard refresh clears memory
+            // Auto-hide success messages
+            if (type === 'success') {
+                setTimeout(() => el.classList.add('hidden'), 3000);
             }
         }
 
-        const app = new ZeroVault();
+        function hideStatus() {
+            document.getElementById('status').classList.add('hidden');
+        }
+
+        // Login handler
+        async function handleLogin() {
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value;
+
+            if (!username || !password) {
+                showStatus('Please enter both username and password.', 'warning');
+                return;
+            }
+
+            const loginBtn = document.getElementById('login-btn');
+            const loginText = document.getElementById('login-text');
+            const loginLoading = document.getElementById('login-loading');
+
+            loginBtn.disabled = true;
+            loginText.classList.add('hidden');
+            loginLoading.classList.remove('hidden');
+            hideStatus();
+
+            try {
+                showStatus('Deriving encryption key (this may take a moment)...', 'info');
+
+                const data = await vault.init(username, password);
+
+                // Update UI
+                document.getElementById('login-screen').classList.add('hidden');
+                document.getElementById('vault-screen').classList.remove('hidden');
+                document.getElementById('user-badge').textContent = `Logged in as: ${vault.getUsername()}`;
+
+                if (data) {
+                    // Pretty-print if it's an object
+                    const display = typeof data === 'object'
+                        ? JSON.stringify(data, null, 2)
+                        : data;
+                    document.getElementById('secret-data').value = display;
+                    showStatus('Vault unlocked. Data loaded successfully.', 'success');
+                } else {
+                    document.getElementById('secret-data').value = '';
+                    document.getElementById('secret-data').placeholder = 'No existing data. Start typing to create new content.';
+                    showStatus('Vault unlocked. No existing data found.', 'success');
+                }
+            } catch (error) {
+                showStatus(`Login failed: ${error.message}`, 'error');
+                loginBtn.disabled = false;
+                loginText.classList.remove('hidden');
+                loginLoading.classList.add('hidden');
+            }
+        }
+
+        // Save handler
+        async function handleSave() {
+            const content = document.getElementById('secret-data').value;
+            const saveText = document.getElementById('save-text');
+            const saveLoading = document.getElementById('save-loading');
+
+            saveText.classList.add('hidden');
+            saveLoading.classList.remove('hidden');
+
+            try {
+                // Try to parse as JSON, otherwise save as raw string
+                let dataToSave;
+                try {
+                    dataToSave = JSON.parse(content);
+                } catch {
+                    dataToSave = content;
+                }
+
+                const result = await vault.save(dataToSave);
+                showStatus(`Saved successfully at ${result.updated_at}`, 'success');
+            } catch (error) {
+                showStatus(`Save failed: ${error.message}`, 'error');
+            } finally {
+                saveText.classList.remove('hidden');
+                saveLoading.classList.add('hidden');
+            }
+        }
+
+        // Reload data from server
+        async function handleReload() {
+            try {
+                showStatus('Reloading data...', 'info');
+                const data = await vault.load();
+
+                if (data) {
+                    const display = typeof data === 'object'
+                        ? JSON.stringify(data, null, 2)
+                        : data;
+                    document.getElementById('secret-data').value = display;
+                    showStatus('Data reloaded successfully.', 'success');
+                } else {
+                    document.getElementById('secret-data').value = '';
+                    showStatus('No data found on server.', 'warning');
+                }
+            } catch (error) {
+                showStatus(`Reload failed: ${error.message}`, 'error');
+            }
+        }
+
+        // Logout handler
+        function handleLogout() {
+            if (confirm('Are you sure you want to logout? Make sure your data is saved.')) {
+                vault.logout();
+            }
+        }
+
+        // Handle Enter key on password field
+        document.getElementById('password').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                handleLogin();
+            }
+        });
+
+        // Focus username field on load
+        document.getElementById('username').focus();
     </script>
 </body>
 </html>
-

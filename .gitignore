@@ -1,0 +1,23 @@
+# Environment files (contain secrets)
+.env
+
+# Storage directory contents (user data)
+storage/*.json
+storage/rate_limits/
+
+# Keep the .htaccess file
+!storage/.htaccess
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
