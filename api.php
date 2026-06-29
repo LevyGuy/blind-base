@@ -29,16 +29,16 @@ if ($allowedOrigins) {
 
     if (in_array($requestOrigin, $origins, true)) {
         header("Access-Control-Allow-Origin: $requestOrigin");
+        header('Vary: Origin');
         header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
-        header('Access-Control-Allow-Headers: Content-Type');
+        header('Access-Control-Allow-Headers: Content-Type, X-Auth-Token');
         header('Access-Control-Max-Age: 86400');
     }
-} else {
-    // Development mode: allow all origins (disable in production!)
-    header('Access-Control-Allow-Origin: *');
-    header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
-    header('Access-Control-Allow-Headers: Content-Type');
 }
+// No fallback: when BLINDBASE_ALLOWED_ORIGINS is unset we emit no
+// Access-Control-Allow-Origin header. Same-origin requests (the bundled
+// client) still work; cross-origin callers are blocked by the browser.
+// A wildcard default ("*") is intentionally avoided.
 
 // Handle preflight OPTIONS requests
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
@@ -127,6 +127,53 @@ function validatePayload(?string $payload, int $maxSizeMB): array {
     return ['valid' => true];
 }
 
+/**
+ * Validate an authentication token.
+ *
+ * The token is the second 256-bit half of the client's PBKDF2 output,
+ * sent as 64 lowercase hex characters. It proves knowledge of the user's
+ * password without revealing the encryption key (the first half, which
+ * never leaves the browser).
+ */
+function validateAuthToken(?string $auth): array {
+    if (!$auth || trim($auth) === '') {
+        return ['valid' => false, 'code' => 'AUTH_REQUIRED', 'message' => 'Authentication token is required'];
+    }
+
+    $auth = trim($auth);
+
+    if (!preg_match('/^[a-f0-9]{64}$/', $auth)) {
+        // Generic message: never distinguish "bad format" from "wrong password"
+        return ['valid' => false, 'code' => 'AUTH_FAILED', 'message' => 'Invalid username or password'];
+    }
+
+    return ['valid' => true, 'auth' => $auth];
+}
+
+/**
+ * Derive a deterministic per-user salt from the username and server secret.
+ *
+ * Replaces randomly generated, server-stored salts. Because the response is
+ * identical whether or not an account exists, get_salt no longer leaks which
+ * usernames are registered, and it performs no disk writes (so it cannot be
+ * abused to exhaust storage). A PBKDF2 salt only needs to be unique per user,
+ * not secret, so deriving it via HMAC is sound.
+ */
+function deriveSalt(string $user, string $secretKeyBin): string {
+    return substr(hash_hmac('sha256', 'salt:' . $user, $secretKeyBin), 0, 32);
+}
+
+/**
+ * Compute the server-stored verifier for an auth token.
+ *
+ * A plain SHA-256 is sufficient here: the auth token is already high-entropy
+ * PBKDF2 output (not a low-entropy password), so a fast hash adds no practical
+ * brute-force exposure while keeping verification cheap.
+ */
+function authVerifier(string $authToken): string {
+    return hash('sha256', $authToken);
+}
+
 // =========================================================================
 // TASK 5: RATE LIMITING
 // =========================================================================
@@ -154,12 +201,21 @@ class RateLimiter {
         $file = $this->storageDir . md5($identifier) . '.json';
         $now = time();
 
+        // Open (creating if needed) and hold an exclusive lock across the whole
+        // read-modify-write so concurrent requests can't race past the limit.
+        $fh = @fopen($file, 'c+');
+        if ($fh === false) {
+            return true; // can't enforce; fail open rather than deny service
+        }
+        if (!flock($fh, LOCK_EX)) {
+            fclose($fh);
+            return true;
+        }
+
+        $content = stream_get_contents($fh);
         $data = ['requests' => [], 'window_start' => $now];
-        if (file_exists($file)) {
-            $content = @file_get_contents($file);
-            if ($content) {
-                $data = json_decode($content, true) ?: $data;
-            }
+        if ($content) {
+            $data = json_decode($content, true) ?: $data;
         }
 
         // Reset window if expired
@@ -168,19 +224,26 @@ class RateLimiter {
         }
 
         // Filter requests within current window
-        $data['requests'] = array_filter(
+        $data['requests'] = array_values(array_filter(
             $data['requests'] ?? [],
             fn($t) => $now - $t < $windowSeconds
-        );
+        ));
 
         // Check limit
         if (count($data['requests']) >= $limit) {
+            flock($fh, LOCK_UN);
+            fclose($fh);
             return false;
         }
 
         // Record this request
         $data['requests'][] = $now;
-        @file_put_contents($file, json_encode($data), LOCK_EX);
+        rewind($fh);
+        ftruncate($fh, 0);
+        fwrite($fh, json_encode($data));
+        fflush($fh);
+        flock($fh, LOCK_UN);
+        fclose($fh);
 
         return true;
     }
@@ -297,31 +360,10 @@ if ($action === 'get_salt') {
     }
     $user = $validation['username'];
 
-    $file = $STORAGE_DIR . $user . '.json';
-
-    if (file_exists($file)) {
-        // User exists, return their specific salt
-        $data = json_decode(file_get_contents($file), true);
-        if (!$data || !isset($data['salt'])) {
-            respondError('DATA_CORRUPTED', 'User data is corrupted', 500);
-        }
-        respondSuccess(['salt' => $data['salt']]);
-    } else {
-        // New user: Generate a new random salt and save it
-        $salt = bin2hex(random_bytes(16)); // 16 bytes = 32 hex chars
-        $initialData = [
-            'salt' => $salt,
-            'encrypted_blob' => null,
-            'created_at' => date('c'),
-            'updated_at' => null
-        ];
-
-        if (!@file_put_contents($file, json_encode($initialData), LOCK_EX)) {
-            respondError('STORAGE_ERROR', 'Unable to create user record', 500);
-        }
-
-        respondSuccess(['salt' => $salt, 'new_user' => true]);
-    }
+    // Return a deterministic salt derived from the username + server secret.
+    // No disk I/O and the response shape is identical for every username, so
+    // this leaks nothing about which accounts exist and cannot create records.
+    respondSuccess(['salt' => deriveSalt($user, $SERVER_SECRET_KEY)]);
 }
 
 // =========================================================================
@@ -340,6 +382,14 @@ if ($action === 'save') {
     }
     $user = $validation['username'];
 
+    // Validate auth token (proof of password knowledge)
+    $authValidation = validateAuthToken($_POST['auth'] ?? null);
+    if (!$authValidation['valid']) {
+        respondError($authValidation['code'], $authValidation['message'],
+            $authValidation['code'] === 'AUTH_REQUIRED' ? 401 : 403);
+    }
+    $auth = $authValidation['auth'];
+
     // Validate payload
     $payloadValidation = validatePayload($_POST['payload'] ?? null, $MAX_PAYLOAD_MB);
     if (!$payloadValidation['valid']) {
@@ -349,8 +399,24 @@ if ($action === 'save') {
     $clientPayload = $_POST['payload'];
 
     $file = $STORAGE_DIR . $user . '.json';
-    if (!file_exists($file)) {
-        respondError('USER_NOT_FOUND', 'User does not exist. Call get_salt first.', 404);
+
+    if (file_exists($file)) {
+        // Existing account: require a matching verifier before overwriting.
+        $data = json_decode(file_get_contents($file), true);
+        if (!$data || !isset($data['verifier'])) {
+            respondError('DATA_CORRUPTED', 'User data is corrupted', 500);
+        }
+        if (!hash_equals($data['verifier'], authVerifier($auth))) {
+            respondError('AUTH_FAILED', 'Invalid username or password', 403);
+        }
+    } else {
+        // First write registers the account by storing the verifier.
+        $data = [
+            'verifier' => authVerifier($auth),
+            'encrypted_blob' => null,
+            'created_at' => date('c'),
+            'updated_at' => null
+        ];
     }
 
     // Layer 2 Encryption (Server Side)
@@ -359,12 +425,6 @@ if ($action === 'save') {
 
     // Encode for storage (Nonce + Ciphertext)
     $storedBlob = base64_encode($nonce . $layer2_ciphertext);
-
-    // Update storage
-    $data = json_decode(file_get_contents($file), true);
-    if (!$data) {
-        respondError('DATA_CORRUPTED', 'User data is corrupted', 500);
-    }
 
     $data['encrypted_blob'] = $storedBlob;
     $data['updated_at'] = date('c');
@@ -387,16 +447,33 @@ if ($action === 'load') {
     }
     $user = $validation['username'];
 
+    // Validate auth token. It is read from the X-Auth-Token header rather than
+    // a query parameter so this read-and-overwrite credential never lands in
+    // web server / proxy access logs, browser history, or Referer headers.
+    $authValidation = validateAuthToken($_SERVER['HTTP_X_AUTH_TOKEN'] ?? null);
+    if (!$authValidation['valid']) {
+        respondError($authValidation['code'], $authValidation['message'],
+            $authValidation['code'] === 'AUTH_REQUIRED' ? 401 : 403);
+    }
+    $auth = $authValidation['auth'];
+
     $file = $STORAGE_DIR . $user . '.json';
 
     if (!file_exists($file)) {
-        // User doesn't exist - return null data (not an error for new users)
+        // Unregistered account: return null data (not an error for new users).
+        // Returned before verifying auth, but this reveals nothing an attacker
+        // cannot already learn from get_salt, and no data exists to protect.
         respondSuccess(['data' => null]);
     }
 
     $data = json_decode(file_get_contents($file), true);
-    if (!$data) {
+    if (!$data || !isset($data['verifier'])) {
         respondError('DATA_CORRUPTED', 'User data is corrupted', 500);
+    }
+
+    // Require a matching verifier before returning any stored ciphertext.
+    if (!hash_equals($data['verifier'], authVerifier($auth))) {
+        respondError('AUTH_FAILED', 'Invalid username or password', 403);
     }
 
     if (empty($data['encrypted_blob'])) {
@@ -417,7 +494,7 @@ if ($action === 'load') {
     $layer1_ciphertext = sodium_crypto_secretbox_open($ciphertext, $nonce, $SERVER_SECRET_KEY);
 
     if ($layer1_ciphertext === false) {
-        respondError('DECRYPT_FAILED', 'Server-side decryption failed. This may indicate key rotation or data corruption.', 500);
+        respondError('DECRYPT_FAILED', 'Server-side decryption failed.', 500);
     }
 
     // Return the Layer 1 ciphertext (still encrypted by client password)
