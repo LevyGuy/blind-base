@@ -8,8 +8,9 @@ It operates on a "Trust No One" (TNO) architecture: data is encrypted in the bro
 
 * **Zero-Knowledge Privacy:** The decryption key exists *only* in the user's RAM. It is never sent to the server.
 * **Two-Layer Defense:**
-    1.  **Layer 1 (Client):** AES-256-GCM encryption (Key derived via PBKDF2).
+    1.  **Layer 1 (Client):** AES-256-GCM encryption (Key derived via PBKDF2-SHA256, 600,000 iterations).
     2.  **Layer 2 (Server):** Sodium/ChaCha20 encryption (Server-side secret).
+* **Authenticated Access:** PBKDF2 yields 512 bits, split into an encryption key (never transmitted) and an independent auth token. The server verifies a hash of the auth token before any read or write, so only the password holder can read or overwrite a vault — while the server still cannot decrypt the contents.
 * **Dependency-Free:** The client SDK is pure Vanilla JS using the native Web Crypto API. No NPM bloat.
 * **Data Agnostic:** Securely store text, JSON, or binary blobs.
 * **Simple Stack:** Designed for modern Browsers and PHP 8.1+ environments.
@@ -107,6 +108,13 @@ By using BlindBase, you accept specific trade-offs inherent to Zero-Knowledge ar
 1. **NO Password Reset:** If a user loses their password, **the data is lost forever**. The server cannot restore it.
 2. **XSS Sensitivity:** Because the key lives in JavaScript memory, your application is vulnerable to Cross-Site Scripting (XSS). Ensure you use strict Content Security Policy (CSP) headers.
 3. **Search limitations:** The server cannot query the data (e.g., `SELECT * WHERE text LIKE '%hello%'`). All filtering must happen client-side after decryption.
+4. **TLS is mandatory:** The auth token is a bearer credential (it authorizes reads and overwrites, though not decryption). Always serve BlindBase over HTTPS so it cannot be intercepted.
+5. **Non-rotatable secret:** Per-user salts are derived from `BLINDBASE_SECRET`. Changing or losing the secret changes every salt and renders **all existing vaults unrecoverable**.
+
+## ⚙️ Deployment Notes
+
+* **Protect the storage directory.** The bundled `storage/.htaccess` blocks direct web access **on Apache only**. If you deploy behind nginx, Caddy, or another server, replicate that denial yourself (e.g. deny requests to `/storage/`), or place the storage directory outside the web root via `BLINDBASE_STORAGE_PATH`.
+* **Restrict CORS.** Leave `BLINDBASE_ALLOWED_ORIGINS` unset for same-origin deployments; set it explicitly only when a different browser origin must call the API.
 
 ## 📄 License
 
